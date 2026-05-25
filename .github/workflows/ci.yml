@@ -10,36 +10,47 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    env:
+      PYTHONPATH: ${{ github.workspace }}/backend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install backend deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Lint backend
         run: ruff check app tests
+
       - name: Test backend
-        run: pytest -q
+        run: python -m pytest -q
 
   ml-service:
     runs-on: ubuntu-latest
     defaults:
       run:
         working-directory: ml_service
+    env:
+      PYTHONPATH: ${{ github.workspace }}/ml_service
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
       - name: Install ML deps
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+
       - name: Test ML service
-        run: pytest -q
+        run: python -m pytest -q
 
   frontend:
     runs-on: ubuntu-latest
@@ -48,11 +59,14 @@ jobs:
         working-directory: frontend
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
+
       - name: Install frontend deps
         run: npm install
+
       - name: Build frontend
         run: npm run build
 
@@ -61,7 +75,9 @@ jobs:
     needs: [backend, ml-service, frontend]
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/setup-buildx-action@v3
+
       - name: Build backend image
         uses: docker/build-push-action@v6
         with:
@@ -69,6 +85,7 @@ jobs:
           file: ./backend/Dockerfile
           push: false
           tags: cyber-backend:ci
+
       - name: Build ml image
         uses: docker/build-push-action@v6
         with:
@@ -76,6 +93,7 @@ jobs:
           file: ./ml_service/Dockerfile
           push: false
           tags: cyber-ml:ci
+
       - name: Build frontend image
         uses: docker/build-push-action@v6
         with:
