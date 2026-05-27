@@ -1,119 +1,104 @@
-import { useEffect, useMemo, useState } from "react";
-import { Link } from "react-router-dom";
-
-import { getAlerts } from "../api/client";
+import { useEffect, useState } from "react";
+import { getAlert, getAlerts } from "../api/client";
+import { DetailModal } from "../components/DetailModal";
+import { JsonBlock } from "../components/JsonBlock";
 import { Pagination } from "../components/Pagination";
-import type { AlertItem } from "../types";
+import type { AlertDetails, AlertFilters, AlertItem, PaginatedResponse } from "../types";
 
-const PAGE_SIZE = 10;
+const severityLabels: Record<string, string> = { low: "Низкий", medium: "Средний", high: "Высокий", critical: "Критический" };
+const statusLabels: Record<string, string> = { new: "Новый", open: "Новый", investigating: "В работе", closed: "Закрыт" };
+const initialFilters: AlertFilters = { page: 1, page_size: 10, search: "", host: "", status: "", severity: "" };
 
-const severityLabels: Record<string, string> = {
-  critical: "критический",
-  high: "высокий",
-  medium: "средний",
-  low: "низкий",
-};
+function normalizedStatus(status: string) {
+  return status === "open" ? "new" : status;
+}
 
-const statusLabels: Record<string, string> = {
-  open: "открыт",
-  investigating: "в расследовании",
-  closed: "закрыт",
-};
+function statusClass(status: string) {
+  return `status-pill status-${normalizedStatus(status)}`;
+}
 
 export function AlertsPage() {
-  const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [status, setStatus] = useState("all");
-  const [severity, setSeverity] = useState("all");
-  const [query, setQuery] = useState("");
-  const [page, setPage] = useState(1);
+  const [filters, setFilters] = useState<AlertFilters>(initialFilters);
+  const [data, setData] = useState<PaginatedResponse<AlertItem> | null>(null);
+  const [selected, setSelected] = useState<AlertDetails | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function load(nextFilters = filters) {
+    getAlerts(nextFilters).then(setData).catch((err) => setError(err.message));
+  }
 
   useEffect(() => {
-    getAlerts().then(setAlerts).catch(console.error);
-  }, []);
+    load(filters);
+  }, [filters.page]);
 
-  useEffect(() => {
-    setPage(1);
-  }, [status, severity, query]);
+  function applyFilters() {
+    const next = { ...filters, page: 1 };
+    setFilters(next);
+    load(next);
+  }
 
-  const filtered = useMemo(() => {
-    const normalizedQuery = query.trim().toLowerCase();
-    return alerts.filter((alert) => {
-      if (status !== "all" && alert.status !== status) return false;
-      if (severity !== "all" && alert.severity !== severity) return false;
-      if (!normalizedQuery) return true;
-      return [
-        alert.title,
-        alert.description,
-        alert.event?.host ?? "",
-        alert.event?.user ?? "",
-        alert.event?.event_type ?? "",
-        alert.incident_id ? `#${alert.incident_id}` : "",
-      ].join(" ").toLowerCase().includes(normalizedQuery);
-    });
-  }, [alerts, status, severity, query]);
+  function resetFilters() {
+    setFilters(initialFilters);
+    load(initialFilters);
+  }
 
-  const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pageItems = filtered.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE);
+  async function openDetails(item: AlertItem) {
+    setError(null);
+    try {
+      setSelected(await getAlert(item.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Не удалось открыть алерт");
+    }
+  }
 
   return (
-    <div>
-      <div className="page-title page-title-row">
-        <div>
-          <h2>Алерты</h2>
-          <p>Подозрительные события, сформированные ML-модулем и правилами риска</p>
-        </div>
-        <div className="page-actions">
-          <input
-            className="search-input"
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Поиск по хосту, пользователю, описанию"
-          />
-          <select className="search-input select" value={severity} onChange={(event) => setSeverity(event.target.value)}>
-            <option value="all">Все уровни</option>
-            <option value="critical">Критические</option>
-            <option value="high">Высокие</option>
-            <option value="medium">Средние</option>
-            <option value="low">Низкие</option>
-          </select>
-        </div>
-      </div>
+    <>
+      <header className="page-header"><div><p>Prioritized alerts</p><h1>Алерты</h1></div></header>
+      {error && <div className="panel error-panel">{error}</div>}
 
-      <div className="filter-tabs">
-        <button className={status === "all" ? "filter-tab active" : "filter-tab"} onClick={() => setStatus("all")}>Все алерты</button>
-        <button className={status === "open" ? "filter-tab active" : "filter-tab"} onClick={() => setStatus("open")}>Открытые</button>
-        <button className={status === "investigating" ? "filter-tab active" : "filter-tab"} onClick={() => setStatus("investigating")}>В расследовании</button>
-        <button className={status === "closed" ? "filter-tab active" : "filter-tab"} onClick={() => setStatus("closed")}>Закрытые</button>
-      </div>
+      <section className="panel filters-panel">
+        <label>Поиск<input value={filters.search as string} onChange={(e) => setFilters({ ...filters, search: e.target.value })} placeholder="заголовок, описание" /></label>
+        <label>Хост<input value={filters.host as string} onChange={(e) => setFilters({ ...filters, host: e.target.value })} placeholder="api-gateway" /></label>
+        <label>Критичность<select value={filters.severity as string} onChange={(e) => setFilters({ ...filters, severity: e.target.value })}><option value="">Все</option><option value="low">low</option><option value="medium">medium</option><option value="high">high</option><option value="critical">critical</option></select></label>
+        <label>Статус<select value={filters.status as string} onChange={(e) => setFilters({ ...filters, status: e.target.value })}><option value="">Все</option><option value="new">new</option><option value="open">open</option><option value="investigating">investigating</option><option value="closed">closed</option></select></label>
+        <div className="filter-actions"><button className="primary-button" onClick={applyFilters}>Применить</button><button className="secondary-button" onClick={resetFilters}>Сбросить</button></div>
+      </section>
 
-      <div className="event-card-list">
-        {pageItems.length === 0 && <div className="empty-state">Алерты по выбранным фильтрам не найдены</div>}
-        {pageItems.map((alert) => (
-          <article className="event-card" key={alert.id}>
-            <div className="event-card-top">
-              <div>
-                <div className="inline-badges">
-                  <span className={`badge ${alert.severity}`}>{severityLabels[alert.severity] ?? alert.severity}</span>
-                  <span className="small-label">{statusLabels[alert.status] ?? alert.status}</span>
-                </div>
-                <h3>{alert.title}</h3>
+      <div className="alert-list-grid">
+        {data?.items.map((alert) => (
+          <article className={`panel alert-row-card ${alert.severity} clickable-card`} key={alert.id} onClick={() => openDetails(alert)}>
+            <div className="alert-row-main">
+              <div className="alert-row-header">
+                <span className={`severity-pill ${alert.severity}`}>{severityLabels[alert.severity] ?? alert.severity}</span>
+                <span className={statusClass(alert.status)}>{statusLabels[alert.status] ?? alert.status}</span>
               </div>
-              <Link className="secondary-button" to={`/alerts/${alert.id}`}>Открыть</Link>
+              <h3>{alert.title}</h3>
+              <p>{alert.description}</p>
             </div>
-            <p>{alert.description}</p>
-            <dl className="meta-list horizontal">
-              <div><dt>Хост</dt><dd>{alert.event?.host ?? "не указан"}</dd></div>
-              <div><dt>Пользователь</dt><dd>{alert.event?.user ?? "не указан"}</dd></div>
-              <div><dt>Тип события</dt><dd>{alert.event?.event_type ?? "не указан"}</dd></div>
-              <div><dt>Риск</dt><dd>{alert.event ? alert.event.risk_score.toFixed(3) : "-"}</dd></div>
-              <div><dt>Инцидент</dt><dd>{alert.incident_id ? `#${alert.incident_id}` : "не создан"}</dd></div>
-            </dl>
+            <div className="alert-row-side">
+              <span>event #{alert.event_id}</span>
+              <span>{alert.incident_id ? `incident #${alert.incident_id}` : "без incident"}</span>
+              <small>{new Date(alert.created_at).toLocaleString()}</small>
+            </div>
           </article>
         ))}
       </div>
+      {data?.items.length === 0 && <div className="panel empty-state">Алерты не найдены</div>}
+      <Pagination data={data} onPageChange={(page) => setFilters({ ...filters, page })} />
 
-      <Pagination page={safePage} pageSize={PAGE_SIZE} total={filtered.length} onPageChange={setPage} />
-    </div>
+      {selected && (
+        <DetailModal title={`Алерт #${selected.id}`} subtitle={selected.title} onClose={() => setSelected(null)}>
+          <div className="details-grid">
+            <div><span>Критичность</span><strong>{selected.severity}</strong></div>
+            <div><span>Статус</span><strong>{statusLabels[selected.status] ?? selected.status}</strong></div>
+            <div><span>Event</span><strong>#{selected.event_id}</strong></div>
+            <div><span>Incident</span><strong>{selected.incident_id ? `#${selected.incident_id}` : "—"}</strong></div>
+            <div><span>Создан</span><strong>{new Date(selected.created_at).toLocaleString()}</strong></div>
+          </div>
+          <h3>Описание</h3><p className="detail-text">{selected.description}</p>
+          {selected.event && (<><h3>Связанное событие</h3><JsonBlock value={selected.event} /></>)}
+        </DetailModal>
+      )}
+    </>
   );
 }

@@ -1,5 +1,5 @@
 {
-  "typescript.enablePromptUseWorkspaceTsdk": true,
-  "typescript.tsdk": "frontend/node_modules/typescript/lib",
-  "typescript.preferences.importModuleSpecifier": "relative"
+  "python.testing.pytestEnabled": true,
+  "editor.formatOnSave": true,
+  "typescript.tsdk": "frontend/node_modules/typescript/lib"
 }

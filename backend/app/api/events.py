@@ -1,16 +1,17 @@
-from __future__ import annotations
-
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import desc, select
-from sqlalchemy.orm import Session, selectinload
+from sqlalchemy import desc, func, or_, select
+from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.deps import verify_api_key
-from app.models import Alert, Event
-from app.schemas import EventIn, EventListItem, EventOut
+from app.models import Event
+from app.schemas import EventIn, EventOut, EventPage
 from app.services.event_ingestion import create_event_from_payload
 
-router = APIRouter(prefix="/events", tags=["События"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(prefix="/events", tags=["events"])
+
+
+def _pages(total: int, page_size: int) -> int:
+    return max(1, (total + page_size - 1) // page_size)
 
 
 @router.post("/ingest", response_model=EventOut, status_code=status.HTTP_201_CREATED)
@@ -21,39 +22,51 @@ async def ingest_event(payload: EventIn, db: Session = Depends(get_db)) -> Event
         raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
-@router.get("", response_model=list[EventListItem])
-@router.get("/", response_model=list[EventListItem], include_in_schema=False)
+@router.get("", response_model=EventPage)
 def list_events(
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
     only_anomalies: bool = False,
     event_type: str | None = None,
     host: str | None = None,
+    user: str | None = None,
+    search: str | None = None,
     db: Session = Depends(get_db),
-) -> list[Event]:
-    stmt = (
-        select(Event)
-        .options(selectinload(Event.alert), selectinload(Event.source))
-        .order_by(desc(Event.timestamp))
-        .limit(limit)
-        .offset(offset)
-    )
+) -> EventPage:
+    stmt = select(Event)
+    count_stmt = select(func.count(Event.id))
+
+    filters = []
     if only_anomalies:
-        stmt = stmt.where(Event.is_anomaly.is_(True))
+        filters.append(Event.is_anomaly.is_(True))
     if event_type:
-        stmt = stmt.where(Event.event_type == event_type)
+        filters.append(Event.event_type == event_type)
     if host:
-        stmt = stmt.where(Event.host == host)
-    return list(db.scalars(stmt).all())
+        filters.append(Event.host.ilike(f"%{host}%"))
+    if user:
+        filters.append(Event.user.ilike(f"%{user}%"))
+    if search:
+        pattern = f"%{search}%"
+        filters.append(or_(Event.message.ilike(pattern), Event.host.ilike(pattern), Event.event_type.ilike(pattern)))
+
+    for item_filter in filters:
+        stmt = stmt.where(item_filter)
+        count_stmt = count_stmt.where(item_filter)
+
+    total = int(db.scalar(count_stmt) or 0)
+    items = list(
+        db.scalars(
+            stmt.order_by(desc(Event.timestamp), desc(Event.id))
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).all()
+    )
+    return EventPage(items=items, total=total, page=page, page_size=page_size, pages=_pages(total, page_size))
 
 
 @router.get("/{event_id}", response_model=EventOut)
 def get_event(event_id: int, db: Session = Depends(get_db)) -> Event:
-    event = db.scalar(
-        select(Event)
-        .options(selectinload(Event.alert).selectinload(Alert.incident), selectinload(Event.source))
-        .where(Event.id == event_id)
-    )
-    if not event:
+    event = db.scalar(select(Event).where(Event.id == event_id))
+    if event is None:
         raise HTTPException(status_code=404, detail="Событие не найдено")
     return event

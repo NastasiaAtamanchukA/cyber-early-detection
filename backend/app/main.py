@@ -1,8 +1,9 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.api.router import api_router
+from app.api import api_router
 from app.config import settings
+from app.database import create_db_and_tables
 
 app = FastAPI(
     title="Система раннего обнаружения кибератак",
@@ -19,13 +20,10 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+
+@app.on_event("startup")
+def on_startup() -> None:
+    create_db_and_tables()
+
+
 app.include_router(api_router, prefix=settings.api_v1_prefix)
-
-
-@app.get("/")
-def root() -> dict:
-    return {
-        "message": "Система раннего обнаружения кибератак",
-        "docs": "/docs",
-        "health": f"{settings.api_v1_prefix}/health",
-    }

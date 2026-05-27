@@ -1,177 +1,137 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
-from random import choice, randint, random
+from datetime import UTC, datetime
+from random import choice, randint
 
-from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select
-from sqlalchemy.orm import Session, selectinload
+from fastapi import APIRouter, Depends, HTTPException, status
+from sqlalchemy import func, or_, select
+from sqlalchemy.orm import Session
 
 from app.database import get_db
-from app.deps import verify_api_key
-from app.models import Alert, CollectionRun, CollectionSchedule, Event
-from app.schemas import CollectionScheduleOut, EventIn, ScheduleRunResult
+from app.models import CollectionRun, CollectionSchedule
+from app.schemas import (
+    CollectionScheduleCreate,
+    CollectionScheduleOut,
+    CollectionSchedulePage,
+    CollectionScheduleUpdate,
+    EventIn,
+    ScheduleRunResult,
+)
 from app.services.event_ingestion import create_event_from_payload
 
-router = APIRouter(prefix="/collectors", tags=["Сбор событий"], dependencies=[Depends(verify_api_key)])
+router = APIRouter(prefix="/collectors", tags=["collectors"])
+
 
 DEFAULT_SCHEDULES = [
     {
-        "code": "auth-every-5-min",
-        "name": "Аутентификация каждые 5 минут",
-        "description": "Собирает события входа пользователей, SSH/RDP-подключения и ошибки авторизации",
+        "code": "auth-5min",
+        "name": "Проверка событий аутентификации",
+        "description": "Имитирует поток успешных и неуспешных входов пользователей.",
         "interval_label": "каждые 5 минут",
-        "source_name": "web-auth-schedule",
+        "source_name": "auth-simulator",
         "source_kind": "web-schedule",
         "event_profile": "auth",
-        "batch_size": 14,
+        "batch_size": 8,
+        "enabled": True,
     },
     {
-        "code": "web-every-10-min",
-        "name": "Веб-журналы каждые 10 минут",
-        "description": "Имитирует сбор access/error логов веб-приложения, включая обращения к административным URL",
+        "code": "web-10min",
+        "name": "Проверка веб-журналов",
+        "description": "Генерирует запросы к web-приложению, включая подозрительные обращения.",
         "interval_label": "каждые 10 минут",
-        "source_name": "web-nginx-schedule",
+        "source_name": "web-gateway",
         "source_kind": "web-schedule",
         "event_profile": "web",
-        "batch_size": 12,
+        "batch_size": 10,
+        "enabled": True,
     },
     {
-        "code": "night-privileged-hourly",
-        "name": "Ночная проверка привилегий",
-        "description": "Собирает редкие ночные события sudo, PowerShell, запуска скриптов и административных действий",
-        "interval_label": "каждый час ночью",
-        "source_name": "web-privileged-schedule",
+        "code": "privileged-manual",
+        "name": "Контроль привилегированных действий",
+        "description": "Показывает события sudo/admin/powershell для демонстрации реагирования.",
+        "interval_label": "по запросу",
+        "source_name": "endpoint-agent",
         "source_kind": "web-schedule",
         "event_profile": "privileged",
-        "batch_size": 10,
-    },
-    {
-        "code": "database-hourly",
-        "name": "База данных каждый час",
-        "description": "Имитирует сбор событий PostgreSQL: отказы доступа, подозрительные запросы и выгрузку данных",
-        "interval_label": "каждый час",
-        "source_name": "web-db-schedule",
-        "source_kind": "web-schedule",
-        "event_profile": "database",
-        "batch_size": 9,
+        "batch_size": 5,
+        "enabled": True,
     },
 ]
 
 
 def ensure_default_schedules(db: Session) -> None:
-    existing_codes = set(db.scalars(select(CollectionSchedule.code)).all())
+    existing_count = db.scalar(select(CollectionSchedule).limit(1))
+    if existing_count:
+        return
     for item in DEFAULT_SCHEDULES:
-        if item["code"] in existing_codes:
-            continue
-        db.add(CollectionSchedule(enabled=True, **item))
+        db.add(CollectionSchedule(**item))
     db.commit()
 
 
-def _timestamp(index: int) -> datetime:
-    return datetime.now(UTC) - timedelta(minutes=index * randint(1, 4))
-
-
 def _auth_event(index: int, schedule: CollectionSchedule) -> EventIn:
-    suspicious = random() > 0.55
-    host = choice(["srv-auth-01", "vpn-gw-01", "dc-01", "jump-host-01"])
-    user = choice(["ivanov", "petrova", "svc-backup", "admin", "unknown"])
-    if suspicious:
-        event_type = choice(["login_failed", "login_failed", "login_success"])
-        message = choice([
-            f"Failed SSH login for {user} from 185.22.{randint(1, 254)}.{randint(1, 254)}",
-            f"Multiple invalid password attempts for {user} via RDP",
-            f"Successful login after many failed attempts for {user}",
-        ])
-    else:
-        event_type = "login_success"
-        message = f"Successful interactive login for {user}"
+    failed = index % 3 == 0
+    user = choice(["alice", "bob", "svc-backup", "admin", "olga"])
     return EventIn(
-        timestamp=_timestamp(index),
-        host=host,
-        user=None if user == "unknown" else user,
-        event_type=event_type,
-        message=message,
+        timestamp=datetime.now(UTC),
+        host=choice(["srv-auth-01", "srv-vpn-01", "dc-01"]),
+        user=user,
+        event_type="login_failed" if failed else "login_success",
+        message=(
+            f"Failed SSH login for {user} from 10.0.0.{randint(10, 250)}"
+            if failed
+            else f"Successful login for {user} from corporate network"
+        ),
         source_name=schedule.source_name,
         source_kind=schedule.source_kind,
-        metadata={"collector": schedule.code, "ip": f"10.10.{randint(1, 10)}.{randint(1, 254)}"},
+        metadata={"profile": "auth", "batch_index": index, "ip": f"10.0.0.{randint(10, 250)}", "force_risk": 0.79 if failed else 0.32},
     )
 
 
 def _web_event(index: int, schedule: CollectionSchedule) -> EventIn:
-    attack = random() > 0.45
-    host = choice(["web-01", "web-02", "api-gateway-01"])
-    if attack:
-        event_type = "web_attack"
-        message = choice([
-            "HTTP 401 GET /admin from suspicious IP, unauthorized access attempt",
-            "HTTP 500 POST /login contains SQL injection pattern ' OR 1=1",
-            "HTTP 403 GET /.env blocked, possible reconnaissance",
-            "HTTP 404 GET /wp-admin from external scanner",
-        ])
-        user = None
-    else:
-        event_type = "network_connection"
-        message = choice([
-            "HTTP 200 GET /api/health from internal monitor",
-            "HTTP 200 GET /dashboard normal user request",
-            "HTTP 302 POST /login successful redirect",
-        ])
-        user = choice(["ivanov", "petrova", "analyst"])
+    suspicious = index % 4 == 0
+    url = choice(["/login", "/api/orders", "/admin", "/.env", "/search?q=' or 1=1--"])
     return EventIn(
-        timestamp=_timestamp(index),
-        host=host,
-        user=user,
-        event_type=event_type,
-        message=message,
+        timestamp=datetime.now(UTC),
+        host=choice(["web-01", "web-02", "api-gateway"]),
+        user=None if suspicious else choice(["web-user", "service-web"]),
+        event_type="web_attack" if suspicious else "web_request",
+        message=f"HTTP GET {url} status={500 if suspicious else 200} user-agent=curl",
         source_name=schedule.source_name,
         source_kind=schedule.source_kind,
-        metadata={"collector": schedule.code, "method": choice(["GET", "POST"]), "status": choice([200, 302, 401, 403, 500])},
+        metadata={"profile": "web", "url": url, "status": 500 if suspicious else 200, "force_risk": 0.84 if suspicious else 0.36},
     )
 
 
 def _privileged_event(index: int, schedule: CollectionSchedule) -> EventIn:
-    host = choice(["srv-core-01", "linux-admin-01", "win-admin-01"])
-    user = choice(["root", "admin", "svc-deploy", "petrova"])
-    event_type = choice(["sudo", "process_start", "privilege_escalation"])
-    message = choice([
-        f"sudo command executed by {user}: cat /etc/shadow",
-        "PowerShell encoded command started with administrative privileges",
-        "bash script started from /tmp with root privileges",
-        "User added to local administrators group",
-    ])
+    user = choice(["root", "admin", "devops", "svc-deploy"])
+    command = choice(["sudo su", "powershell -enc", "usermod -aG sudo", "cat /etc/shadow"])
     return EventIn(
-        timestamp=_timestamp(index),
-        host=host,
+        timestamp=datetime.now(UTC),
+        host=choice(["srv-app-01", "srv-db-01", "linux-jump-01"]),
         user=user,
-        event_type=event_type,
-        message=message,
+        event_type="privilege_escalation",
+        message=f"Privileged command detected: {command} by {user}",
         source_name=schedule.source_name,
         source_kind=schedule.source_kind,
-        metadata={"collector": schedule.code, "process": choice(["powershell.exe", "bash", "sudo", "cmd.exe"])},
+        metadata={"profile": "privileged", "command": command, "force_risk": 0.92},
     )
 
 
 def _database_event(index: int, schedule: CollectionSchedule) -> EventIn:
-    host = choice(["db-01", "db-02", "analytics-db-01"])
-    user = choice(["app_user", "report_user", "postgres", "unknown"])
-    risky = random() > 0.5
-    event_type = choice(["db_access_denied", "data_exfiltration"]) if risky else "file_access"
-    message = choice([
-        "PostgreSQL denied connection for invalid password from external IP",
-        "Large SELECT export detected from sensitive table customers",
-        "COPY command executed for table payments to external file",
-        "Routine SELECT query completed successfully",
-    ])
+    export = index % 2 == 0
     return EventIn(
-        timestamp=_timestamp(index),
-        host=host,
-        user=None if user == "unknown" else user,
-        event_type=event_type,
-        message=message,
+        timestamp=datetime.now(UTC),
+        host=choice(["db-01", "db-report-01"]),
+        user=choice(["analyst", "dba", "svc-report"]),
+        event_type="data_export" if export else "database_query",
+        message=(
+            "Large data export from customer table to external path"
+            if export
+            else "SELECT query from report dashboard"
+        ),
         source_name=schedule.source_name,
         source_kind=schedule.source_kind,
-        metadata={"collector": schedule.code, "database": choice(["main", "billing", "analytics"])},
+        metadata={"profile": "database", "rows": randint(10, 100000), "force_risk": 0.85 if export else 0.38},
     )
 
 
@@ -182,71 +142,136 @@ def build_demo_event(index: int, schedule: CollectionSchedule) -> EventIn:
         "privileged": _privileged_event,
         "database": _database_event,
     }
+
+    if schedule.event_profile == "mixed":
+        builder = choice(list(builders.values()))
+        return builder(index, schedule)
+
     return builders.get(schedule.event_profile, _auth_event)(index, schedule)
 
 
-@router.get("/schedules", response_model=list[CollectionScheduleOut])
-def list_schedules(db: Session = Depends(get_db)) -> list[CollectionSchedule]:
+def _pages(total: int, page_size: int) -> int:
+    return max(1, (total + page_size - 1) // page_size)
+
+
+@router.get("/schedules", response_model=CollectionSchedulePage)
+def list_schedules(
+    page: int = 1,
+    page_size: int = 10,
+    enabled: bool | None = None,
+    event_profile: str | None = None,
+    search: str | None = None,
+    db: Session = Depends(get_db),
+) -> CollectionSchedulePage:
     ensure_default_schedules(db)
-    return list(db.scalars(select(CollectionSchedule).order_by(CollectionSchedule.id)).all())
+    page = max(page, 1)
+    page_size = min(max(page_size, 1), 100)
+    stmt = select(CollectionSchedule)
+    count_stmt = select(func.count(CollectionSchedule.id))
+
+    filters = []
+    if enabled is not None:
+        filters.append(CollectionSchedule.enabled.is_(enabled))
+    if event_profile:
+        filters.append(CollectionSchedule.event_profile == event_profile)
+    if search:
+        pattern = f"%{search}%"
+        filters.append(or_(CollectionSchedule.name.ilike(pattern), CollectionSchedule.code.ilike(pattern), CollectionSchedule.description.ilike(pattern), CollectionSchedule.source_name.ilike(pattern)))
+
+    for item_filter in filters:
+        stmt = stmt.where(item_filter)
+        count_stmt = count_stmt.where(item_filter)
+
+    total = int(db.scalar(count_stmt) or 0)
+    items = list(
+        db.scalars(
+            stmt.order_by(CollectionSchedule.id)
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).all()
+    )
+    return CollectionSchedulePage(items=items, total=total, page=page, page_size=page_size, pages=_pages(total, page_size))
+
+
+@router.post("/schedules", response_model=CollectionScheduleOut, status_code=status.HTTP_201_CREATED)
+def create_schedule(payload: CollectionScheduleCreate, db: Session = Depends(get_db)) -> CollectionSchedule:
+    ensure_default_schedules(db)
+    existing = db.scalar(select(CollectionSchedule).where(CollectionSchedule.code == payload.code))
+    if existing:
+        raise HTTPException(status_code=409, detail="Расписание с таким code уже существует")
+
+    schedule = CollectionSchedule(**payload.model_dump(), updated_at=datetime.now(UTC))
+    db.add(schedule)
+    db.commit()
+    db.refresh(schedule)
+    return schedule
+
+
+@router.patch("/schedules/{schedule_id}", response_model=CollectionScheduleOut)
+def update_schedule(
+    schedule_id: int,
+    payload: CollectionScheduleUpdate,
+    db: Session = Depends(get_db),
+) -> CollectionSchedule:
+    ensure_default_schedules(db)
+    schedule = db.scalar(select(CollectionSchedule).where(CollectionSchedule.id == schedule_id))
+    if not schedule:
+        raise HTTPException(status_code=404, detail="Расписание сбора не найдено")
+
+    update_data = payload.model_dump(exclude_unset=True)
+    new_code = update_data.get("code")
+    if new_code and new_code != schedule.code:
+        duplicate = db.scalar(select(CollectionSchedule).where(CollectionSchedule.code == new_code))
+        if duplicate:
+            raise HTTPException(status_code=409, detail="Расписание с таким code уже существует")
+
+    for field, value in update_data.items():
+        setattr(schedule, field, value)
+    schedule.updated_at = datetime.now(UTC)
+
+    db.commit()
+    db.refresh(schedule)
+    return schedule
 
 
 @router.post("/schedules/{schedule_id}/run", response_model=ScheduleRunResult)
 async def run_schedule(schedule_id: int, db: Session = Depends(get_db)) -> ScheduleRunResult:
     ensure_default_schedules(db)
     schedule = db.scalar(select(CollectionSchedule).where(CollectionSchedule.id == schedule_id))
-    if not schedule:
-        raise HTTPException(status_code=404, detail="Расписание сбора не найдено")
+    if schedule is None:
+        raise HTTPException(status_code=404, detail="Расписание не найдено")
     if not schedule.enabled:
         raise HTTPException(status_code=400, detail="Расписание отключено")
 
-    started_at = datetime.now(UTC)
-    created_events: list[Event] = []
-    alerts_before = db.scalar(select(func_count_alerts()))
-    incidents_before = db.scalar(select(func_count_incidents()))
-
-    for index in range(schedule.batch_size):
-        created_events.append(await create_event_from_payload(build_demo_event(index, schedule), db))
-
-    alerts_after = db.scalar(select(func_count_alerts()))
-    incidents_after = db.scalar(select(func_count_incidents()))
-    schedule.last_run_at = datetime.now(UTC)
-
-    run = CollectionRun(
-        schedule_id=schedule.id,
-        status="success",
-        events_created=len(created_events),
-        alerts_created=int((alerts_after or 0) - (alerts_before or 0)),
-        incidents_created=int((incidents_after or 0) - (incidents_before or 0)),
-        details={"profile": schedule.event_profile, "source": schedule.source_name},
-        started_at=started_at,
-        finished_at=datetime.now(UTC),
-    )
+    run = CollectionRun(schedule_id=schedule.id, status="running", message="Запуск сбора событий")
     db.add(run)
     db.commit()
-    db.refresh(schedule)
     db.refresh(run)
 
-    hydrated_events = list(
-        db.scalars(
-            select(Event)
-            .options(selectinload(Event.alert).selectinload(Alert.incident), selectinload(Event.source))
-            .where(Event.id.in_([event.id for event in created_events]))
-            .order_by(Event.id)
-        ).all()
+    created_events = 0
+    created_alerts = 0
+    try:
+        for index in range(schedule.batch_size):
+            event = await create_event_from_payload(build_demo_event(index, schedule), db)
+            created_events += 1
+            if event.is_anomaly:
+                created_alerts += 1
+        run.status = "success"
+        run.events_created = created_events
+        run.alerts_created = created_alerts
+        run.message = f"Создано событий: {created_events}; алертов: {created_alerts}"
+    except Exception as exc:
+        run.status = "failed"
+        run.message = str(exc)
+    finally:
+        run.finished_at = datetime.now(UTC)
+        db.commit()
+        db.refresh(run)
+
+    return ScheduleRunResult(
+        schedule_id=schedule.id,
+        run_id=run.id,
+        events_created=run.events_created,
+        alerts_created=run.alerts_created,
+        message=run.message,
     )
-    return ScheduleRunResult(schedule=schedule, run=run, events=hydrated_events)
-
-
-def func_count_alerts():
-    from sqlalchemy import func
-
-    return func.count(Alert.id)
-
-
-def func_count_incidents():
-    from sqlalchemy import func
-
-    from app.models import Incident
-
-    return func.count(Incident.id)

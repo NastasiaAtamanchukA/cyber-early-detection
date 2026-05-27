@@ -1,19 +1,29 @@
 from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
 
-from app.model import FEATURE_ORDER, load_or_bootstrap_model, predict, train_model
-from app.schemas import PredictRequest, PredictResponse, TrainRequest, TrainResponse
+from app.model import FEATURE_ORDER, predict, train_model
 
-app = FastAPI(title="Cyber ML Service", version="0.1.0")
+app = FastAPI(title="Cyber Early Detection ML Service", version="0.2.0")
 
 
-@app.on_event("startup")
-def startup() -> None:
-    load_or_bootstrap_model()
+class PredictRequest(BaseModel):
+    features: list[float] = Field(min_length=len(FEATURE_ORDER), max_length=len(FEATURE_ORDER))
+
+
+class PredictResponse(BaseModel):
+    anomaly: bool
+    anomaly_score: float
+    risk_score: float
+    model_version: str
+
+
+class TrainRequest(BaseModel):
+    training_data: list[list[float]] | None = None
 
 
 @app.get("/health")
-def healthcheck() -> dict:
-    return {"status": "ok"}
+def health() -> dict[str, str]:
+    return {"status": "ok", "service": "ml-service", "healthy": "true"}
 
 
 @app.post("/predict", response_model=PredictResponse)
@@ -25,13 +35,10 @@ def predict_endpoint(payload: PredictRequest) -> PredictResponse:
     return PredictResponse(**result)
 
 
-@app.post("/train", response_model=TrainResponse)
-def train_endpoint(payload: TrainRequest) -> TrainResponse:
-    try:
-        bundle = train_model(csv_path=payload.csv_path)
-    except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return TrainResponse(model_version=bundle["model_version"], trained_on_rows=bundle["trained_on_rows"])
+@app.post("/train")
+def train_endpoint(payload: TrainRequest) -> dict:
+    bundle = train_model(payload.training_data)
+    return {"status": "trained", "model_version": bundle["model_version"]}
 
 
 @app.get("/feature-order")

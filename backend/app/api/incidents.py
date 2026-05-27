@@ -1,138 +1,112 @@
-from __future__ import annotations
-
-from datetime import UTC, datetime
+from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import desc, select
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.database import get_db
-from app.deps import verify_api_key
-from app.models import Alert, Event, Incident
-from app.schemas import IncidentActionIn, IncidentDetailsOut, IncidentOut
+from app.models import Incident
+from app.schemas import IncidentOut, IncidentPage
 
-router = APIRouter(prefix="/incidents", tags=["Инциденты"], dependencies=[Depends(verify_api_key)])
-
-SEVERITY_ORDER = ["low", "medium", "high", "critical"]
+router = APIRouter(prefix="/incidents", tags=["incidents"])
 
 
-def _load_incident(db: Session, incident_id: int) -> Incident | None:
-    return db.scalar(
+def _pages(total: int, page_size: int) -> int:
+    return max(1, (total + page_size - 1) // page_size)
+
+
+def _load_incident(db: Session, incident_id: int) -> Incident:
+    incident = db.scalar(
         select(Incident)
-        .options(
-            selectinload(Incident.alerts)
-            .selectinload(Alert.event)
-            .selectinload(Event.source)
-        )
+        .options(selectinload(Incident.alerts))
         .where(Incident.id == incident_id)
     )
+    if incident is None:
+        raise HTTPException(status_code=404, detail="Инцидент не найден")
+    return incident
 
 
-def _incident_details(incident: Incident) -> IncidentDetailsOut:
-    related_alerts = sorted(incident.alerts, key=lambda item: item.created_at, reverse=True)
-    related_events = [alert.event for alert in related_alerts if alert.event is not None]
-    return IncidentDetailsOut.model_validate(
-        {
-            "id": incident.id,
-            "title": incident.title,
-            "severity": incident.severity,
-            "status": incident.status,
-            "description": incident.description,
-            "affected_host": incident.affected_host,
-            "affected_user": incident.affected_user,
-            "event_count": incident.event_count,
-            "alert_count": incident.alert_count,
-            "first_seen": incident.first_seen,
-            "last_seen": incident.last_seen,
-            "created_at": incident.created_at,
-            "updated_at": incident.updated_at,
-            "recommended_actions": incident.recommended_actions,
-            "attack_stage": incident.attack_stage,
-            "detection_logic": incident.detection_logic,
-            "response_sla": incident.response_sla,
-            "related_alerts": related_alerts,
-            "related_events": related_events,
-        }
-    )
-
-
-def _change_severity(current: str, direction: int) -> str:
-    if current not in SEVERITY_ORDER:
-        return "medium"
-    index = SEVERITY_ORDER.index(current)
-    return SEVERITY_ORDER[max(0, min(len(SEVERITY_ORDER) - 1, index + direction))]
-
-
-@router.get("", response_model=list[IncidentOut])
-@router.get("/", response_model=list[IncidentOut], include_in_schema=False)
+@router.get("", response_model=IncidentPage)
 def list_incidents(
-    limit: int = Query(default=100, ge=1, le=500),
-    offset: int = Query(default=0, ge=0),
-    status_filter: str | None = None,
+    page: int = Query(default=1, ge=1),
+    page_size: int = Query(default=10, ge=1, le=100),
+    status: str | None = None,
     severity: str | None = None,
     host: str | None = None,
-    user: str | None = None,
+    search: str | None = None,
     db: Session = Depends(get_db),
-) -> list[Incident]:
-    stmt = select(Incident).order_by(desc(Incident.last_seen)).limit(limit).offset(offset)
-    if status_filter:
-        stmt = stmt.where(Incident.status == status_filter)
+) -> IncidentPage:
+    stmt = select(Incident).options(selectinload(Incident.alerts))
+    count_stmt = select(func.count(Incident.id))
+
+    filters = []
+    if status:
+        if status == "new":
+            filters.append(Incident.status.in_(["new", "open"]))
+        else:
+            filters.append(Incident.status == status)
     if severity:
-        stmt = stmt.where(Incident.severity == severity)
+        filters.append(Incident.severity == severity)
     if host:
-        stmt = stmt.where(Incident.affected_host == host)
-    if user:
-        stmt = stmt.where(Incident.affected_user == user)
-    return list(db.scalars(stmt).all())
+        filters.append(Incident.affected_host.ilike(f"%{host}%"))
+    if search:
+        pattern = f"%{search}%"
+        filters.append(or_(Incident.title.ilike(pattern), Incident.description.ilike(pattern), Incident.affected_host.ilike(pattern)))
+
+    for item_filter in filters:
+        stmt = stmt.where(item_filter)
+        count_stmt = count_stmt.where(item_filter)
+
+    total = int(db.scalar(count_stmt) or 0)
+    items = list(
+        db.scalars(
+            stmt.order_by(desc(Incident.created_at), desc(Incident.id))
+            .limit(page_size)
+            .offset((page - 1) * page_size)
+        ).all()
+    )
+    return IncidentPage(items=items, total=total, page=page, page_size=page_size, pages=_pages(total, page_size))
 
 
-@router.get("/{incident_id}", response_model=IncidentDetailsOut)
-def get_incident(incident_id: int, db: Session = Depends(get_db)) -> IncidentDetailsOut:
+@router.get("/{incident_id}", response_model=IncidentOut)
+def get_incident(incident_id: int, db: Session = Depends(get_db)) -> Incident:
+    return _load_incident(db, incident_id)
+
+
+@router.post("/{incident_id}/take", response_model=IncidentOut)
+def take_incident(incident_id: int, db: Session = Depends(get_db)) -> Incident:
     incident = _load_incident(db, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Инцидент не найден")
-    return _incident_details(incident)
-
-
-@router.post("/{incident_id}/actions", response_model=IncidentDetailsOut)
-def apply_incident_action(
-    incident_id: int,
-    payload: IncidentActionIn,
-    db: Session = Depends(get_db),
-) -> IncidentDetailsOut:
-    incident = _load_incident(db, incident_id)
-    if not incident:
-        raise HTTPException(status_code=404, detail="Инцидент не найден")
-
-    if payload.action == "take_in_work":
-        incident.status = "investigating"
-        for alert in incident.alerts:
-            if alert.status != "closed":
-                alert.status = "investigating"
-    elif payload.action == "close":
-        incident.status = "closed"
-        for alert in incident.alerts:
-            alert.status = "closed"
-    elif payload.action == "reopen":
-        incident.status = "open"
-        for alert in incident.alerts:
-            alert.status = "open"
-    elif payload.action == "escalate":
-        incident.severity = _change_severity(incident.severity, 1)
-        for alert in incident.alerts:
-            alert.severity = _change_severity(alert.severity, 1)
-    elif payload.action == "downgrade":
-        incident.severity = _change_severity(incident.severity, -1)
-        for alert in incident.alerts:
-            alert.severity = _change_severity(alert.severity, -1)
-    else:
-        raise HTTPException(status_code=400, detail="Неизвестное действие")
-
-    # Комментарий пока не сохраняется отдельной таблицей, но действие отражается в updated_at и статусах.
-    incident.updated_at = datetime.now(UTC)
+    if incident.status in {"closed"}:
+        raise HTTPException(status_code=400, detail="Закрытый инцидент нужно переоткрыть")
+    incident.status = "investigating"
+    incident.last_seen = datetime.utcnow()
+    for alert in incident.alerts:
+        alert.status = "investigating"
     db.commit()
+    return _load_incident(db, incident_id)
 
-    refreshed = _load_incident(db, incident_id)
-    if not refreshed:
-        raise HTTPException(status_code=404, detail="Инцидент не найден после обновления")
-    return _incident_details(refreshed)
+
+@router.post("/{incident_id}/close", response_model=IncidentOut)
+def close_incident(incident_id: int, db: Session = Depends(get_db)) -> Incident:
+    incident = _load_incident(db, incident_id)
+    if incident.status not in {"investigating"}:
+        raise HTTPException(status_code=400, detail="Закрыть можно только инцидент в работе")
+    incident.status = "closed"
+    incident.last_seen = datetime.utcnow()
+    for alert in incident.alerts:
+        alert.status = "closed"
+    db.commit()
+    return _load_incident(db, incident_id)
+
+
+@router.post("/{incident_id}/reopen", response_model=IncidentOut)
+def reopen_incident(incident_id: int, db: Session = Depends(get_db)) -> Incident:
+    incident = _load_incident(db, incident_id)
+    if incident.status != "closed":
+        raise HTTPException(status_code=400, detail="Переоткрыть можно только закрытый инцидент")
+    incident.status = "investigating"
+    incident.last_seen = datetime.utcnow()
+    for alert in incident.alerts:
+        alert.status = "investigating"
+    db.commit()
+    return _load_incident(db, incident_id)

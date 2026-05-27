@@ -1,3 +1,6 @@
+export type Severity = "low" | "medium" | "high" | "critical";
+export type IncidentStatus = "new" | "open" | "investigating" | "closed" | string;
+
 export type EventItem = {
   id: number;
   timestamp: string;
@@ -8,59 +11,46 @@ export type EventItem = {
   is_anomaly: boolean;
   anomaly_score: number;
   risk_score: number;
-  source_name?: string | null;
-  alert_id?: number | null;
+  created_at: string;
 };
 
 export type EventDetails = EventItem & {
-  source_id: number;
   raw_log: Record<string, unknown>;
   normalized_log: Record<string, unknown>;
-  created_at: string;
-};
-
-export type IncidentItem = {
-  id: number;
-  title: string;
-  severity: string;
-  status: string;
-  description: string;
-  affected_host: string | null;
-  affected_user: string | null;
-  event_count: number;
-  alert_count: number;
-  first_seen: string;
-  last_seen: string;
-  created_at: string;
-  updated_at: string;
 };
 
 export type AlertItem = {
   id: number;
   event_id: number;
-  incident_id?: number | null;
+  incident_id: number | null;
   title: string;
-  severity: string;
+  severity: Severity | string;
   status: string;
   description: string;
   created_at: string;
-  updated_at: string;
-  event?: EventItem | null;
-  incident?: IncidentItem | null;
 };
 
-export type AlertSummary = Omit<AlertItem, "incident">;
+export type AlertDetails = AlertItem & {
+  event: EventDetails | null;
+};
+
+export type IncidentItem = {
+  id: number;
+  title: string;
+  severity: Severity | string;
+  status: IncidentStatus;
+  affected_host: string | null;
+  affected_user: string | null;
+  description: string;
+  first_seen: string;
+  last_seen: string;
+  created_at: string;
+  recommended_actions: string[];
+};
 
 export type IncidentDetails = IncidentItem & {
-  recommended_actions: string[];
-  attack_stage: string;
-  detection_logic: string;
-  response_sla: string;
-  related_alerts: AlertSummary[];
-  related_events: EventItem[];
+  alerts: AlertItem[];
 };
-
-export type IncidentAction = "take_in_work" | "close" | "reopen" | "escalate" | "downgrade";
 
 export type StatItem = {
   name: string;
@@ -69,26 +59,41 @@ export type StatItem = {
 
 export type HostStatItem = {
   host: string;
+  event_count: number;
+  alert_count: number;
+  max_risk: number;
+};
+
+export type RiskBucketItem = {
+  name: string;
+  count: number;
+  min_risk: number;
+  max_risk: number;
+};
+
+export type TimelineItem = {
+  label: string;
   count: number;
   max_risk: number;
 };
 
 export type DashboardData = {
-  total_events: number;
-  total_alerts: number;
-  total_incidents: number;
-  open_incidents: number;
+  events_total: number;
+  alerts_total: number;
+  incidents_total: number;
+  anomalies_total: number;
+  average_risk: number;
   critical_alerts: number;
-  high_alerts: number;
-  anomalies: number;
-  avg_risk: number;
-  events_by_type: StatItem[];
+  high_risk_events: number;
   alerts_by_severity: StatItem[];
+  events_by_type: StatItem[];
   incidents_by_status: StatItem[];
   top_hosts: HostStatItem[];
-  latest_events: EventItem[];
-  latest_alerts: AlertItem[];
-  latest_incidents: IncidentItem[];
+  risk_distribution: RiskBucketItem[];
+  events_timeline: TimelineItem[];
+  recent_events: EventItem[];
+  recent_alerts: AlertItem[];
+  recent_incidents: IncidentItem[];
 };
 
 export type CollectionSchedule = {
@@ -99,27 +104,73 @@ export type CollectionSchedule = {
   interval_label: string;
   source_name: string;
   source_kind: string;
-  event_profile: string;
+  event_profile: "auth" | "web" | "privileged" | "database" | "mixed" | string;
   batch_size: number;
   enabled: boolean;
-  last_run_at: string | null;
   created_at: string;
+  updated_at: string;
 };
 
-export type CollectionRun = {
-  id: number;
-  schedule_id: number;
-  status: string;
-  events_created: number;
-  alerts_created: number;
-  incidents_created: number;
-  details: Record<string, unknown>;
-  started_at: string;
-  finished_at: string | null;
+export type CollectionSchedulePayload = {
+  code: string;
+  name: string;
+  description: string;
+  interval_label: string;
+  source_name: string;
+  source_kind: string;
+  event_profile: "auth" | "web" | "privileged" | "database" | "mixed";
+  batch_size: number;
+  enabled: boolean;
 };
 
 export type ScheduleRunResult = {
-  schedule: CollectionSchedule;
-  run: CollectionRun;
-  events: EventItem[];
+  schedule_id: number;
+  run_id: number;
+  events_created: number;
+  alerts_created: number;
+  message: string;
+};
+
+export type PaginatedResponse<T> = {
+  items: T[];
+  total: number;
+  page: number;
+  page_size: number;
+  pages: number;
+};
+
+export type EventFilters = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  host?: string;
+  user?: string;
+  event_type?: string;
+  only_anomalies?: boolean;
+};
+
+export type AlertFilters = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  host?: string;
+  status?: string;
+  severity?: string;
+};
+
+export type IncidentFilters = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  host?: string;
+  status?: string;
+  severity?: string;
+};
+
+export type ScheduleFilters = {
+  page?: number;
+  page_size?: number;
+  search?: string;
+  enabled?: boolean | "";
+  event_profile?: string;
 };

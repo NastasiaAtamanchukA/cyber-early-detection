@@ -1,39 +1,14 @@
-# Environment
 .env
-.env.local
-.env.*.local
-
-# Python
-__pycache__/
-*.py[cod]
-*.pyo
-*.pyd
 .venv/
 venv/
-env/
+__pycache__/
 .pytest_cache/
-.mypy_cache/
-.coverage
-htmlcov/
-
-# Node / frontend
-frontend/node_modules/
-frontend/dist/
-frontend/.vite/
-
-# Logs
-*.log
-logs/
-
-# Docker / local data
-postgres_data/
-model_data/
-
-# IDE
-.vscode/*
-!.vscode/settings.json
-.idea/
-
-# OS
+.ruff_cache/
+*.pyc
+*.db
+node_modules/
+dist/
 .DS_Store
-Thumbs.db
+coverage/
+htmlcov/
+/data/

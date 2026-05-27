@@ -1,31 +1,32 @@
-type PaginationProps = {
-  page: number;
-  pageSize: number;
-  total: number;
+import type { PaginatedResponse } from "../types";
+
+type Props<T> = {
+  data: PaginatedResponse<T> | null;
   onPageChange: (page: number) => void;
 };
 
-export function Pagination({ page, pageSize, total, onPageChange }: PaginationProps) {
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const from = total === 0 ? 0 : (page - 1) * pageSize + 1;
-  const to = Math.min(page * pageSize, total);
+export function Pagination<T>({ data, onPageChange }: Props<T>) {
+  if (!data || data.pages <= 1) return null;
 
   return (
     <div className="pagination">
+      <button
+        className="secondary-button"
+        disabled={data.page <= 1}
+        onClick={() => onPageChange(data.page - 1)}
+      >
+        ← Назад
+      </button>
       <span>
-        Показано {from}–{to} из {total}
+        Страница <strong>{data.page}</strong> из <strong>{data.pages}</strong> · всего {data.total}
       </span>
-      <div className="pagination-buttons">
-        <button className="secondary-button" disabled={page <= 1} onClick={() => onPageChange(page - 1)}>
-          Назад
-        </button>
-        <strong>
-          {page} / {totalPages}
-        </strong>
-        <button className="secondary-button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)}>
-          Вперёд
-        </button>
-      </div>
+      <button
+        className="secondary-button"
+        disabled={data.page >= data.pages}
+        onClick={() => onPageChange(data.page + 1)}
+      >
+        Вперед →
+      </button>
     </div>
   );
 }
