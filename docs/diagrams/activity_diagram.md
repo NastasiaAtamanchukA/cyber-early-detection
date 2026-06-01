@@ -1,6 +1,7 @@
 # Activity Diagram
 
 ```mermaid
+@startuml
 title Диаграмма деятельности: обработка события безопасности в Cyber Early Detection
 
 |Источник логов / Администратор|
@@ -128,4 +129,5 @@ else (Нет)
 endif
 
 stop
+@enduml
 ```
