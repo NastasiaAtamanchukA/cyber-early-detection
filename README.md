@@ -28,7 +28,11 @@
 
 ## Быстрый запуск
 
-Нужны Docker и Docker Compose.
+Экспортируйте файлы с репозитория с помощью команд
+git clone https://github.com/NastasiaAtamanchukA/cyber-early-detection.git
+
+
+Запустите сборку с помощью Docker и Docker Compose.
 
 ```bash
 cp .env.example .env
