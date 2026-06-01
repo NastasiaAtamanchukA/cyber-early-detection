@@ -29,8 +29,9 @@
 ## Быстрый запуск
 
 Экспортируйте файлы с репозитория с помощью команд
+```bash
 git clone https://github.com/NastasiaAtamanchukA/cyber-early-detection.git
-
+```
 
 Запустите сборку с помощью Docker и Docker Compose.
 
